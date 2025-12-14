@@ -112,7 +112,7 @@ async function run() {
         res.status(500).send({ message: 'Internal server error' });
       }
     });
-    //Patcj Role by id 
+    //Patch Role by id 
     app.patch('/users/:id', verifyFireBaseToken, async (req, res) => {
       const userId = req.params.id;
       const updates = req.body;
@@ -137,7 +137,8 @@ async function run() {
     // --- BOOKS ROUTES ---
     app.get('/books', async (req, res) => {
       try {
-        const result = await booksCollection.find().sort({ price_USD: -1 }).toArray();
+        // CHANGED: Sort by _id descending (Latest first) instead of price
+        const result = await booksCollection.find().sort({ _id: -1 }).toArray();
         res.send(result);
       } catch (err) {
         res.status(500).send({ message: 'Failed to fetch books' });
@@ -166,6 +167,7 @@ async function run() {
     app.get('/my-books/:email', async (req, res) => {
       const email = req.params.email;
       const query = { email: email };
+      // This was already sorting by added_date -1 (Correct)
       const result = await booksCollection.find(query).sort({ added_date: -1 }).toArray();
       res.send(result);
     });
@@ -231,7 +233,7 @@ async function run() {
         const { email } = req.query;
         if (email && req.decoded_email !== email) return res.status(403).send({ message: 'Forbidden access' });
         if (email) query.email = email;
-        const result = await ordersCollection.find(query).sort({ price: -1 }).toArray();
+        const result = await ordersCollection.find(query).sort({ _id: -1 }).toArray();
         res.send(result);
       } catch (err) {
         res.status(500).send({ message: 'Failed to fetch orders' });
@@ -241,7 +243,7 @@ async function run() {
     app.get('/orders/:author', verifyFireBaseToken, async (req, res) => {
       try {
         const author = req.params.displayName;
-        const result = await ordersCollection.find(author).toArray();
+        const result = await ordersCollection.find(author).sort({ _id: -1 }).toArray();
         res.send(result);
       } catch (err) {
         res.status(500).send({ message: 'Failed to fetch librarian orders' });
@@ -271,6 +273,7 @@ async function run() {
         res.status(500).send({ message: 'Failed to delete order' });
       }
     });
+
     app.patch('/orders/status/:id', verifyFireBaseToken, async (req, res) => {
       try {
         const id = req.params.id;
@@ -353,35 +356,31 @@ async function run() {
     });
 
     app.patch('/payment-success', async (req, res) => {
-      try {
-        const session_id = req.query.session_id;
-        if (!session_id) return res.status(400).send({ message: 'Missing session_id' });
-        const session = await stripe.checkout.sessions.retrieve(session_id);
-        if (session.payment_status === 'paid') {
-          const id = session.metadata.orderId;
-          const transactionId = session.payment_intent;
-          const query = { _id: new ObjectId(id) };
-          const update = {
-            $set: {
-              payment_status: 'paid',
-              transactionId: transactionId,
-              paymentDate: new Date()
-            }
-          };
-          const result = await ordersCollection.updateOne(query, update);
-          return res.send(result);
+      const session_id = req.query.session_id;
+      const session = await stripe.checkout.sessions.retrieve(session_id);
+
+      if (session.payment_status === 'paid') {
+        const id = session.metadata.orderId
+        const transactionId = session.payment_intent
+        const query = { _id: new ObjectId(id) }
+        const update = {
+          $set: {
+            payment_status: 'paid',
+            transactionId: transactionId,
+            paymentDate: new Date()
+          }
         }
-        res.send({ success: false });
-      } catch (err) {
-        res.status(500).send({ message: 'Failed to record payment' });
+        const result = ordersCollection.updateOne(query, update)
+        res.send(result)
       }
-    });
+      res.send({ success: false })
+    })
 
     app.get('/payments', async (req, res) => {
       try {
         const email = req.query.email;
         const query = { email: email, payment_status: 'paid' };
-        const result = await ordersCollection.find(query).toArray();
+        const result = await ordersCollection.find(query).sort({ paymentDate: -1 }).toArray();
         res.send(result);
       } catch (err) {
         res.status(500).send({ message: 'Failed to fetch payments' });
@@ -446,7 +445,7 @@ async function run() {
     app.get('/wishlist', async (req, res) => {
       const email = req.query.email;
       const query = { userEmail: email };
-      const result = await wishlistCollection.find(query).toArray();
+      const result = await wishlistCollection.find(query).sort({ _id: -1 }).toArray();
       res.send(result);
     });
 
@@ -468,7 +467,7 @@ async function run() {
         const totalOrders = await ordersCollection.countDocuments();
         const pendingOrders = await ordersCollection.countDocuments({ status: "pending" });
         const cancelledOrders = await ordersCollection.countDocuments({ status: "cancelled" });
-        const completedOrders = await ordersCollection.countDocuments({ status: "completed" });
+        const completedOrders = await ordersCollection.countDocuments({ status: "delivered" });
         res.send({
           totalUsers, admins, librarians, users, books, totalOrders, pendingOrders, cancelledOrders, completedOrders
         });
@@ -476,7 +475,6 @@ async function run() {
         res.status(500).send({ message: "Failed to load admin stats" });
       }
     });
-
     // Root
     app.get('/', (req, res) => {
       res.send("Hello form Server");
